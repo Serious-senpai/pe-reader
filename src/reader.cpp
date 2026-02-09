@@ -15,6 +15,19 @@ struct HandleWrapper
     }
 };
 
+DWORD rva_to_offset(DWORD rva, IMAGE_SECTION_HEADER *sections, WORD num_sections)
+{
+    for (WORD i = 0; i < num_sections; i++)
+    {
+        IMAGE_SECTION_HEADER &sec = sections[i];
+        if (rva >= sec.VirtualAddress && rva < sec.VirtualAddress + sec.Misc.VirtualSize)
+        {
+            return rva - sec.VirtualAddress + sec.PointerToRawData;
+        }
+    }
+    return 0;
+}
+
 void print_header(const std::string &title)
 {
     constexpr size_t WIDTH = 40;
@@ -167,8 +180,42 @@ int main(int argc, char *argv[])
                   << "\n";
     }
 
-    IMAGE_SECTION_HEADER *section = IMAGE_FIRST_SECTION(nt_headers);
-    for (WORD i = 0; i < nt_headers->FileHeader.NumberOfSections; i++, section++)
+    IMAGE_SECTION_HEADER *sections = IMAGE_FIRST_SECTION(nt_headers);
+    WORD num_sections = nt_headers->FileHeader.NumberOfSections;
+
+    DWORD import_offset = rva_to_offset(optional_header->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress, sections, num_sections);
+    IMAGE_IMPORT_DESCRIPTOR *import_descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR *>(data.data() + import_offset);
+    print_header("IMPORT DESCRIPTORS");
+    while (import_descriptor->Name != 0)
+    {
+        char *dll_name = reinterpret_cast<char *>(data.data() + rva_to_offset(import_descriptor->Name, sections, num_sections));
+        std::cout << "DLL Name: " << dll_name << "\n";
+        std::cout << "Original First Thunk: 0x" << std::hex << import_descriptor->OriginalFirstThunk << std::dec << "\n";
+        std::cout << "Time Date Stamp: 0x" << std::hex << import_descriptor->TimeDateStamp << std::dec << "\n";
+        std::cout << "Forwarder Chain: 0x" << std::hex << import_descriptor->ForwarderChain << std::dec << "\n";
+        std::cout << "First Thunk: 0x" << std::hex << import_descriptor->FirstThunk << std::dec << "\n";
+
+        IMAGE_THUNK_DATA *thunk = reinterpret_cast<IMAGE_THUNK_DATA *>(data.data() + rva_to_offset(import_descriptor->OriginalFirstThunk, sections, num_sections));
+        while (thunk->u1.AddressOfData != 0)
+        {
+            if (thunk->u1.Ordinal & IMAGE_ORDINAL_FLAG)
+            {
+                WORD ordinal = static_cast<WORD>(thunk->u1.Ordinal & 0xFFFF);
+                std::cout << "  Import by Ordinal: " << ordinal << "\n";
+            }
+            else
+            {
+                IMAGE_IMPORT_BY_NAME *import_by_name = reinterpret_cast<IMAGE_IMPORT_BY_NAME *>(data.data() + rva_to_offset(static_cast<DWORD>(thunk->u1.AddressOfData), sections, num_sections));
+                std::cout << "  Import by Name: " << import_by_name->Name << "\n";
+            }
+            thunk++;
+        }
+
+        import_descriptor++;
+    }
+
+    IMAGE_SECTION_HEADER *section = sections;
+    for (WORD i = 0; i < num_sections; i++, section++)
     {
         print_header("SECTION HEADER " + std::to_string(i + 1));
         char name[9] = {};
